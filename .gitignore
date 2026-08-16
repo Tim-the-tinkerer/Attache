@@ -1,0 +1,7 @@
+.build/
+.swiftpm/
+HDIUtil.app/
+Attaché.app/
+Attache.app/
+*.xcodeproj
+.DS_Store
