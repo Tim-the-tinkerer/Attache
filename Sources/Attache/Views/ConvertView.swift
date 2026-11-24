@@ -9,7 +9,7 @@ struct ConvertView: View {
             OperationHeader(
                 title: "Convert",
                 systemImage: "arrow.triangle.2.circlepath",
-                blurb: "Rewrite a disk image in another UDIF format. Wraps hdiutil convert."
+                blurb: "Rewrite a disk image in another format. Wraps hdiutil convert, or diskutil image create when the source or destination is Apple Sparse Image."
             )
 
             PathWell(
@@ -32,7 +32,7 @@ struct ConvertView: View {
             GroupBox("Format") {
                 VStack(alignment: .leading, spacing: 8) {
                     Picker("Format", selection: $model.convertForm.format) {
-                        ForEach(ImageFormat.convertCases) { format in
+                        ForEach(convertFormats) { format in
                             Text("\(format.rawValue) — \(format.title)").tag(format)
                         }
                     }
@@ -42,11 +42,18 @@ struct ConvertView: View {
                         .foregroundStyle(.secondary)
                     if model.convertForm.format == .udsb {
                         Divider()
-                        BandSizePicker(
-                            preset: $model.convertForm.bandPreset,
-                            customMegabytes: $model.convertForm.bandCustomMB,
-                            currentBytes: model.convertForm.sourceBandBytes
-                        )
+                        if sourceIsASIF {
+                            Text("Band size cannot be set when the source is an Apple Sparse Image. diskutil image uses the system default.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            BandSizePicker(
+                                preset: $model.convertForm.bandPreset,
+                                customMegabytes: $model.convertForm.bandCustomMB,
+                                currentBytes: model.convertForm.sourceBandBytes
+                            )
+                        }
                     }
                 }
             }
@@ -69,11 +76,17 @@ struct ConvertView: View {
             GroupBox("Encryption") {
                 VStack(alignment: .leading, spacing: 10) {
                     Picker("Encryption", selection: $model.convertForm.encryption) {
-                        ForEach(EncryptionChoice.allCases) { choice in
+                        ForEach(encryptionChoices) { choice in
                             Text(choice.title).tag(choice)
                         }
                     }
                     .labelsHidden()
+                    if sourceIsASIF || model.convertForm.format == .asif {
+                        Text("Apple Sparse Image encryption is AES-256. One passphrase unlocks the source and, when set, encrypts the destination.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     SecureField("Source or destination password (if needed)", text: $model.convertForm.password)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 360)
@@ -95,6 +108,22 @@ struct ConvertView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .onChange(of: model.convertForm.format) { _ in model.normalizeASIFConvert() }
+    }
+
+    private var sourceIsASIF: Bool {
+        model.convertForm.source.map(DiskImagePath.isASIF) ?? false
+    }
+
+    private var convertFormats: [ImageFormat] {
+        if sourceIsASIF {
+            return ImageFormat.convertCases.filter { $0.diskutilFormat != nil }
+        }
+        return ImageFormat.convertCases
+    }
+
+    private var encryptionChoices: [EncryptionChoice] {
+        sourceIsASIF || model.convertForm.format == .asif ? [.none, .aes256] : EncryptionChoice.allCases
     }
 
     private func setSource(_ url: URL) {
@@ -102,5 +131,6 @@ struct ConvertView: View {
         model.convertForm.sourceBandBytes = SparseBundleInfo.isSparseBundle(url)
             ? SparseBundleInfo.readBandSizeBytes(at: url)
             : nil
+        model.normalizeASIFConvert()
     }
 }

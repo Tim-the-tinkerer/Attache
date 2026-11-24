@@ -30,6 +30,12 @@ struct HybridView: View {
                 onClear: { model.hybridForm.source = nil },
                 onPickRecent: { model.hybridForm.source = $0 }
             )
+            if model.hybridForm.source.map(DiskImagePath.isASIF) == true {
+                Text("Hybrid is not available for an Apple Sparse Image. hdiutil makehybrid does not read this format.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             GroupBox("Filesystems") {
                 VStack(alignment: .leading, spacing: 8) {
@@ -73,7 +79,7 @@ struct HybridView: View {
                         .fontWeight(.semibold)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!model.canRun || model.hybridForm.source == nil)
+                .disabled(!model.canRun || model.hybridForm.source == nil || model.hybridForm.source.map(DiskImagePath.isASIF) == true)
             } secondary: {
                 EmptyView()
             }

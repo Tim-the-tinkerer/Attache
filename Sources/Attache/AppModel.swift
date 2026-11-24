@@ -61,6 +61,14 @@ struct CreateForm {
         case .device: return deviceFormat == .udsb
         }
     }
+
+    var createsASIF: Bool {
+        switch mode {
+        case .blank: return type == .asif
+        case .folder: return folderFormat == .asif
+        case .device: return deviceFormat == .asif
+        }
+    }
 }
 
 struct ConvertForm {
@@ -282,8 +290,13 @@ final class AppModel: ObservableObject {
     }
 
     func detachSelected(force: Bool) {
-        guard let target = selectedAttached?.detachTarget else { return }
-        run(CommandBuilder.detach(target: target, force: force), kind: .detach, reveal: nil, onFinish: { [weak self] _ in
+        guard let image = selectedAttached, let target = image.detachTarget else { return }
+        let request = CommandBuilder.detach(
+            target: target,
+            force: force,
+            asif: DiskImagePath.isASIF(image.imagePath)
+        )
+        run(request, kind: .detach, reveal: nil, onFinish: { [weak self] _ in
             await self?.refreshAttached()
         })
     }
@@ -309,6 +322,9 @@ final class AppModel: ObservableObject {
             return
         }
         remember(source)
+        if DiskImagePath.isASIF(source), attachForm.skipVerify || attachForm.autoOpen {
+            appendLog("Skip verify and Finder auto-open do not apply to an Apple Sparse Image. Attaché uses diskutil image attach.")
+        }
         let request = CommandBuilder.attach(
             image: source.path,
             readOnly: attachForm.readOnly,
@@ -397,9 +413,33 @@ final class AppModel: ObservableObject {
         } onSuccess: { [weak self] committed in
             guard let self else { return }
             if form.attachAfter {
-                await self.attachCommittedImage(committed)
+                let passphrase = form.encryption == .none ? nil : form.password
+                await self.attachCommittedImage(committed, password: passphrase)
             }
             await self.refreshAttached()
+        }
+    }
+
+    func normalizeASIFForm() {
+        guard createForm.createsASIF else { return }
+        if createForm.filesystem.diskutilFilesystem == nil {
+            createForm.filesystem = .apfs
+        }
+        if createForm.encryption == .aes128 {
+            createForm.encryption = .none
+        }
+        if createForm.mode == .folder {
+            createForm.overrideFilesystem = false
+        }
+    }
+
+    func normalizeASIFConvert() {
+        let sourceIsASIF = convertForm.source.map(DiskImagePath.isASIF) ?? false
+        if sourceIsASIF, convertForm.format.diskutilFormat == nil {
+            convertForm.format = .udzo
+        }
+        if (convertForm.format == .asif || sourceIsASIF) && convertForm.encryption == .aes128 {
+            convertForm.encryption = .none
         }
     }
 
@@ -417,10 +457,8 @@ final class AppModel: ObservableObject {
             fail(message)
             return
         }
-        remember(source)
-        remember(output)
         let bandSectors: Int64?
-        if convertForm.format == .udsb {
+        if convertForm.format == .udsb && !DiskImagePath.isASIF(source) {
             let resolved = SparseBandSize.resolve(preset: convertForm.bandPreset, customMegabytes: convertForm.bandCustomMB)
             if let message = resolved.error {
                 fail(message)
@@ -430,6 +468,18 @@ final class AppModel: ObservableObject {
         } else {
             bandSectors = nil
         }
+        if let message = CommandBuilder.asifRequestError(
+            source: source.path,
+            format: convertForm.format,
+            blankFilesystem: nil,
+            encryption: convertForm.encryption,
+            bandSizeSectors: bandSectors
+        ) {
+            fail(message)
+            return
+        }
+        remember(source)
+        remember(output)
         writeStaged(to: output, kind: .convert) { staging in
             CommandBuilder.convert(
                 image: source.path,
@@ -454,17 +504,12 @@ final class AppModel: ObservableObject {
             if let root = try? PlistParsing.plistRoot(result.stdout) {
                 self.inspectForm.rows = PlistParsing.flatten(root)
                 if let dict = root as? [String: Any] {
-                    var summary: [String: String] = [:]
-                    summary["Format"] = PlistParsing.stringValue(in: dict, keys: ["Format", "format", "Class Name"])
-                    summary["Checksum"] = PlistParsing.stringValue(in: dict, keys: ["Checksum Type", "Checksum"])
-                    if let size = dict["Size Information"] as? [String: Any] {
-                        summary["Total Bytes"] = PlistParsing.stringValue(in: size, keys: ["Total Bytes", "Compressed Bytes"])
-                    }
+                    var summary = PlistParsing.imageInfoSummary(dict)
                     if SparseBundleInfo.isSparseBundle(source),
                        let bandBytes = SparseBundleInfo.readBandSizeBytes(at: source) {
                         summary["Band Size"] = SparseBandSize.display(bytes: bandBytes)
                     }
-                    self.inspectForm.summary = summary.compactMapValues { $0 }
+                    self.inspectForm.summary = summary
                 }
             }
             await self.detectEncryption(source)
@@ -476,12 +521,20 @@ final class AppModel: ObservableObject {
             fail("Choose an image to verify.")
             return
         }
+        if let message = CommandBuilder.unsupportedASIFOperation("Verify", path: source.path) {
+            fail(message)
+            return
+        }
         run(CommandBuilder.verify(image: source.path, password: inspectForm.password), kind: .inspect, reveal: nil)
     }
 
     func runCompact() {
         guard let source = compactForm.source else {
             fail("Choose a sparse image to compact.")
+            return
+        }
+        if let message = CommandBuilder.unsupportedASIFOperation("Compact", path: source.path) {
+            fail(message)
             return
         }
         remember(source)
@@ -501,8 +554,12 @@ final class AppModel: ObservableObject {
             fail("Choose an image to resize.")
             return
         }
+        let asif = DiskImagePath.isASIF(source)
         run(CommandBuilder.resizeLimits(image: source.path, password: resizeForm.password), kind: .inspect, reveal: nil, onSuccess: { [weak self] result in
-            if let limits = try? PlistParsing.parseResizeLimits(from: result.stdout) {
+            let limits = try? (asif
+                ? PlistParsing.parseDiskutilResizeLimits(from: result.stdout)
+                : PlistParsing.parseResizeLimits(from: result.stdout))
+            if let limits {
                 self?.resizeForm.snapshot = ResizeLimitsSnapshot(
                     sourcePath: OutputPathGuard.standardized(source).path,
                     limits: limits
@@ -514,6 +571,10 @@ final class AppModel: ObservableObject {
     func runResize() {
         guard let source = resizeForm.source else {
             fail("Choose an image to resize.")
+            return
+        }
+        if DiskImagePath.isASIF(source), resizeForm.partitionOnly {
+            fail("Partition-only resize is not available for an Apple Sparse Image. diskutil image resize can change the image, or the image only.")
             return
         }
         let sourcePath = OutputPathGuard.standardized(source).path
@@ -552,7 +613,13 @@ final class AppModel: ObservableObject {
     }
 
     private func requestAdvancedResizeConfirm(growNote: Bool) {
-        let mode = resizeForm.imageOnly ? "Image Only (−imageonly)" : "Partition Only (−partitiononly)"
+        let asif = resizeForm.source.map(DiskImagePath.isASIF) ?? false
+        let mode: String
+        if resizeForm.imageOnly {
+            mode = asif ? "Image only (--image-only)" : "Image Only (−imageonly)"
+        } else {
+            mode = "Partition Only (−partitiononly)"
+        }
         let direction = growNote ? "grow" : "shrink"
         resizeDirectionNote =
             "\(mode) changes only part of the container. A failed \(direction) can leave the image or its partition unusable. Attaché is not a backup — keep a copy of important images."
@@ -586,6 +653,9 @@ final class AppModel: ObservableObject {
                 resizeForm.snapshot = nil
             }
             resizeForm.source = url
+            if DiskImagePath.isASIF(url) {
+                resizeForm.partitionOnly = false
+            }
         } else {
             resizeForm.source = nil
             resizeForm.snapshot = nil
@@ -595,6 +665,10 @@ final class AppModel: ObservableObject {
     func runChecksum() {
         guard let source = checksumForm.source else {
             fail("Choose an image to checksum.")
+            return
+        }
+        if let message = CommandBuilder.unsupportedASIFOperation("Checksum", path: source.path) {
+            fail(message)
             return
         }
         remember(source)
@@ -792,6 +866,10 @@ final class AppModel: ObservableObject {
             fail(message)
             return
         }
+        if let message = CommandBuilder.unsupportedASIFOperation("Hybrid", path: source.path) {
+            fail(message)
+            return
+        }
         remember(output)
         writeStaged(to: output, kind: .hybrid) { staging in
             CommandBuilder.makeHybrid(
@@ -907,7 +985,9 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             let staging = OutputPathGuard.stagingURL(for: dest, uniqueID: UUID().uuidString)
             self.registerStaging(staging)
-            self.run(build(staging), kind: kind, reveal: dest, onFinish: { [weak self] finish in
+            let request = build(staging)
+            let passphrase = request.password
+            self.run(request, kind: kind, reveal: dest, onFinish: { [weak self] finish in
                 guard let self else { return }
                 switch finish {
                 case .succeeded:
@@ -915,6 +995,7 @@ final class AppModel: ObservableObject {
                         staging: staging,
                         dest: dest,
                         overwriteConfirmed: overwriteConfirmed,
+                        password: passphrase,
                         onSuccess: onSuccess
                     )
                 case .cancelled, .failed(_):
@@ -935,6 +1016,7 @@ final class AppModel: ObservableObject {
         staging: URL,
         dest: URL,
         overwriteConfirmed: Bool,
+        password: String?,
         onSuccess: ((URL) async -> Void)?
     ) async {
         let destExistsNow = FileManager.default.fileExists(atPath: dest.path)
@@ -944,7 +1026,7 @@ final class AppModel: ObservableObject {
             return
         }
 
-        if let verifyError = await verifyStagedImage(staging) {
+        if let verifyError = await verifyStagedImage(staging, password: password) {
             self.job = .failed(verifyError)
             self.appendLog("Staged image left at \(staging.path)")
             return
@@ -974,11 +1056,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func verifyStagedImage(_ staging: URL) async -> String? {
+    private func verifyStagedImage(_ staging: URL, password: String?) async -> String? {
+        let request = CommandBuilder.imageInfo(image: staging.path, password: password)
         do {
-            let result = try await service.runProbe(CommandBuilder.imageInfo(image: staging.path, password: nil))
+            let result = try await service.runProbe(request)
             if result.status != 0 {
-                return "The staged image could not be read with hdiutil imageinfo (exit \(result.status)). The destination was not replaced. Staging file: \(staging.path)"
+                return "The staged image could not be read with \(request.statusLabel) (exit \(result.status)). The destination was not replaced. Staging file: \(staging.path)"
             }
             return nil
         } catch {
@@ -986,7 +1069,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func attachCommittedImage(_ url: URL) async {
+    /// Mounts the committed image. Called from inside the create job, so it must not call `run()` (that cancels the current task).
+    private func attachCommittedImage(_ url: URL, password: String?) async {
         let request = CommandBuilder.attach(
             image: url.path,
             readOnly: false,
@@ -994,19 +1078,27 @@ final class AppModel: ObservableObject {
             skipVerify: false,
             autoOpen: false,
             mountPoint: nil,
-            password: nil
+            password: password
         )
         appendCommand(request.displayCommand)
+        job = .running(verb: request.statusLabel, percent: nil, kind: .attach)
         do {
-            let result = try await service.runJob(request, onProgress: { _ in }, onLog: { [weak self] line in
+            let result = try await service.runJob(request, onProgress: { [weak self] value in
+                self?.job = .running(verb: request.statusLabel, percent: value, kind: .attach)
+            }, onLog: { [weak self] line in
                 self?.appendLog(line)
             })
             if result.status == 0 {
+                job = .succeeded("\(request.statusLabel) finished.")
                 appendLog("Attached \(url.path)")
             } else {
+                let message = Self.failureMessage(verb: request.statusLabel, status: result.status, log: result.log)
+                job = .failed(message)
                 appendLog("Created the image but attach failed (exit \(result.status)).")
+                appendLog(message)
             }
         } catch {
+            job = .failed(error.localizedDescription)
             appendLog("Created the image but attach failed: \(error.localizedDescription)")
         }
     }
@@ -1074,14 +1166,14 @@ final class AppModel: ObservableObject {
         jobTask?.cancel()
         lastRevealURL = reveal
         appendCommand(request.displayCommand)
-        job = .running(verb: request.verb, percent: nil, kind: kind)
+        job = .running(verb: request.statusLabel, percent: nil, kind: kind)
         jobTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let result = try await self.service.runJob(
                     request,
                     onProgress: { [weak self] value in
-                        self?.job = .running(verb: request.verb, percent: value, kind: kind)
+                        self?.job = .running(verb: request.statusLabel, percent: value, kind: kind)
                     },
                     onLog: { [weak self] line in
                         self?.appendLog(line)
@@ -1093,7 +1185,7 @@ final class AppModel: ObservableObject {
                     self.job = .cancelled
                     self.appendLog("Cancelled.")
                 case .succeeded:
-                    let summary = "hdiutil \(request.verb) finished."
+                    let summary = "\(request.statusLabel) finished."
                     self.job = .succeeded(summary)
                     self.appendLog(summary)
                     if let reveal {
@@ -1101,7 +1193,7 @@ final class AppModel: ObservableObject {
                     }
                     await onSuccess?(result)
                 case .failed(let status):
-                    let message = Self.failureMessage(verb: request.verb, status: status, log: result.log)
+                    let message = Self.failureMessage(verb: request.statusLabel, status: status, log: result.log)
                     self.job = .failed(message)
                     self.appendLog(message)
                 }
@@ -1131,6 +1223,20 @@ final class AppModel: ObservableObject {
         }
         if createForm.mode == .device && createForm.deviceBSD.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "Choose a source device."
+        }
+        if createForm.createsASIF {
+            if createForm.mode == .folder && createForm.overrideFilesystem {
+                return "An ASIF image from a folder keeps the source layout. diskutil image does not take a filesystem override."
+            }
+            if let message = CommandBuilder.asifRequestError(
+                source: nil,
+                format: .asif,
+                blankFilesystem: createForm.mode == .blank ? createForm.filesystem : nil,
+                encryption: createForm.encryption,
+                bandSizeSectors: nil
+            ) {
+                return message
+            }
         }
         return CommandBuilder.validatePassword(
             encryption: createForm.encryption,
@@ -1222,11 +1328,13 @@ final class AppModel: ObservableObject {
             return !line.isEmpty
                 && !lower.hasPrefix("percent")
                 && !lower.hasPrefix("$")
+                && !ConsoleText.isHdiutilDeprecation(line)
+                && CommandBuilder.parsePercentLine(line) == nil
         })
         if let useful, useful.count < 400 {
             return useful
         }
-        return "hdiutil \(verb) failed (exit \(status))."
+        return "\(verb) failed (exit \(status))."
     }
 
     private static func bytesLabel(_ bytes: Int64) -> String {
@@ -1234,7 +1342,7 @@ final class AppModel: ObservableObject {
     }
 
     static let imageTypes: [UTType] = {
-        let tags = ["dmg", "iso", "img", "cdr", "sparseimage", "sparsebundle", "toast", "shadow"]
+        let tags = ["dmg", "iso", "img", "cdr", "sparseimage", "sparsebundle", "toast", "shadow", "asif"]
         return tags.compactMap { UTType(filenameExtension: $0) } + [
             UTType(filenameExtension: "dmg") ?? .data
         ]

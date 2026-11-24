@@ -560,6 +560,230 @@ check(!JobKind.checksum.stronglyDiscourageQuit, "checksum is ordinary confirm")
 check(JobKind.convert.interruptionMayCorrupt, "convert interruption is dangerous")
 check(!JobKind.inspect.interruptionMayCorrupt, "inspect interruption is not destructive")
 
+check(attach.tool == .hdiutil && attach.newlinePassphrase == false, "dmg attach stays on hdiutil")
+check(DiskImagePath.isDiskImage(URL(fileURLWithPath: "/tmp/A.asif")), "asif is a disk image")
+check(DiskImagePath.isASIF("/tmp/A.ASIF"), "asif extension is case insensitive")
+
+let asifAttach = CommandBuilder.attach(
+    image: "/tmp/A.asif",
+    readOnly: true,
+    noMount: true,
+    skipVerify: true,
+    autoOpen: true,
+    mountPoint: "/tmp/mnt",
+    password: "secret"
+)
+check(asifAttach.processArguments == [
+    "image", "attach", "--readOnly", "--noMount", "--stdinpass", "--plist", "/tmp/A.asif"
+], "ASIF attach argv omits skip-verify, auto-open, and mount point")
+check(asifAttach.newlinePassphrase, "ASIF passphrase is newline terminated")
+check(asifAttach.executablePath == "/usr/sbin/diskutil", "ASIF attach uses diskutil")
+check(asifAttach.statusLabel == "diskutil image attach", "ASIF attach status")
+check(!asifAttach.displayCommand.contains("secret"), "ASIF password not in display command")
+
+let asifMounted = CommandBuilder.attach(
+    image: "/tmp/A.asif",
+    readOnly: false,
+    noMount: false,
+    skipVerify: false,
+    autoOpen: false,
+    mountPoint: "/tmp/mnt",
+    password: nil
+)
+check(asifMounted.processArguments == [
+    "image", "attach", "--mountPoint", "/tmp/mnt", "--plist", "/tmp/A.asif"
+], "ASIF attach mount point")
+
+let asifInfo = CommandBuilder.imageInfo(image: "/tmp/A.asif", password: "secret")
+check(asifInfo.processArguments == [
+    "image", "info", "--stdinpass", "--plist", "/tmp/A.asif"
+], "ASIF image info argv")
+
+let asifProbe = CommandBuilder.isEncrypted(image: "/tmp/A.asif")
+check(
+    asifProbe.tool == .hdiutil && asifProbe.verb == "isencrypted" && asifProbe.executablePath == "/usr/bin/hdiutil",
+    "ASIF encryption probe stays on hdiutil"
+)
+
+let asifBlank = CommandBuilder.createBlank(
+    sizeSpec: "2g",
+    output: "/tmp/Blank.asif",
+    type: .asif,
+    filesystem: .apfs,
+    volumeName: "Vault",
+    encryption: .aes256,
+    password: "hunter2",
+    overwrite: true,
+    attachAfter: true
+)
+check(asifBlank.processArguments == [
+    "image", "create", "blank", "--encrypt", "--stdinpass", "--plist",
+    "--format", "ASIF", "--size", "2g", "--volumeName", "Vault", "--fs", "APFS", "/tmp/Blank.asif"
+], "ASIF blank argv")
+check(!asifBlank.processArguments.contains("-ov") && !asifBlank.processArguments.contains("-attach"), "ASIF blank omits hdiutil-only flags")
+check(!asifBlank.displayCommand.contains("hunter2"), "ASIF blank password not in display command")
+
+let asifFolder = CommandBuilder.createFromFolder(
+    folder: "/tmp/Stuff",
+    output: "/tmp/Stuff.asif",
+    format: .asif,
+    filesystem: .hfsJournaled,
+    volumeName: "Stuff",
+    encryption: .none,
+    password: nil,
+    overwrite: false,
+    attachAfter: true
+)
+check(asifFolder.processArguments == [
+    "image", "create", "from", "--plist", "--format", "ASIF", "--volumeName", "Stuff",
+    "/tmp/Stuff", "/tmp/Stuff.asif"
+], "folder ASIF omits filesystem override")
+
+let asifToUDZO = CommandBuilder.convert(
+    image: "/tmp/A.asif",
+    output: "/tmp/B.dmg",
+    format: .udzo,
+    encryption: .none,
+    password: nil,
+    overwrite: false
+)
+check(asifToUDZO.processArguments == [
+    "image", "create", "from", "--plist", "--format", "UDZO", "/tmp/A.asif", "/tmp/B.dmg"
+], "convert ASIF to UDZO")
+
+let dmgToASIF = CommandBuilder.convert(
+    image: "/tmp/A.dmg",
+    output: "/tmp/B.asif",
+    format: .asif,
+    encryption: .aes256,
+    password: "secret",
+    overwrite: false
+)
+check(dmgToASIF.processArguments == [
+    "image", "create", "from", "--encrypt", "--stdinpass", "--plist", "--format", "ASIF",
+    "/tmp/A.dmg", "/tmp/B.asif"
+], "convert to encrypted ASIF")
+
+let asifToRaw = CommandBuilder.convert(
+    image: "/tmp/A.asif",
+    output: "/tmp/B.dmg",
+    format: .udrw,
+    encryption: .none,
+    password: nil,
+    overwrite: false
+)
+check(asifToRaw.processArguments.contains("RAW"), "ASIF to UDRW is written as RAW")
+
+let asifLimits = CommandBuilder.resizeLimits(image: "/tmp/A.asif", password: "secret")
+check(asifLimits.processArguments == [
+    "image", "resize", "--stdinpass", "--plist", "/tmp/A.asif"
+], "ASIF resize limits omit --size")
+
+let asifResize = CommandBuilder.resize(
+    image: "/tmp/A.asif",
+    sizeSpec: "10g",
+    imageOnly: true,
+    partitionOnly: false,
+    password: nil
+)
+check(asifResize.processArguments == [
+    "image", "resize", "--plist", "--size", "10g", "--image-only", "/tmp/A.asif"
+], "ASIF resize image-only")
+
+let asifEject = CommandBuilder.detach(target: "/dev/disk4", force: true, asif: true)
+check(asifEject.processArguments == ["eject", "force", "/dev/disk4"], "ASIF detach is diskutil eject")
+check(asifEject.tool == .diskutil && asifEject.argumentPrefix.isEmpty, "eject has no image prefix")
+check(asifEject.statusLabel == "diskutil eject", "eject status")
+check(asifEject.executablePath == "/usr/sbin/diskutil", "eject uses diskutil")
+
+check(
+    CommandBuilder.asifRequestError(source: "/tmp/A.asif", format: .udco, blankFilesystem: nil, encryption: .none, bandSizeSectors: nil)?.contains("UDCO") == true,
+    "UDCO rejected for ASIF"
+)
+check(
+    CommandBuilder.asifRequestError(source: nil, format: .asif, blankFilesystem: nil, encryption: .aes128, bandSizeSectors: nil) == "ASIF encryption is AES-256.",
+    "AES-128 rejected for ASIF"
+)
+check(
+    CommandBuilder.asifRequestError(source: "/tmp/A.asif", format: .udsb, blankFilesystem: nil, encryption: .none, bandSizeSectors: 16384)?.contains("Band size") == true,
+    "ASIF to UDSB rejects a custom band size"
+)
+check(
+    CommandBuilder.asifRequestError(source: "/tmp/A.dmg", format: .udzo, blankFilesystem: nil, encryption: .aes128, bandSizeSectors: 1) == nil,
+    "ordinary convert is not an ASIF error"
+)
+check(
+    CommandBuilder.asifRequestError(source: nil, format: nil, blankFilesystem: .hfsJournaled, encryption: .none, bandSizeSectors: nil)?.contains("APFS") == true,
+    "ASIF blank rejects HFS+"
+)
+check(CommandBuilder.unsupportedASIFOperation("Compact", path: "/tmp/A.asif") != nil, "compact rejects ASIF")
+check(CommandBuilder.unsupportedASIFOperation("Compact", path: "/tmp/A.sparseimage") == nil, "sparseimage compact allowed")
+
+check(CommandBuilder.parsePercentLine("[20% completed] Resizing disk image...") == 20, "diskutil 20 percent")
+check(CommandBuilder.parsePercentLine("[0% completed] Starting[8% completed] Resizing") == 8, "last diskutil percent")
+check(CommandBuilder.parsePercentLine("100% completed") == 100, "diskutil 100 percent")
+check(CommandBuilder.parsePercentLine("hdiutil: attach failed: no mountable file systems") == nil, "error line is not progress")
+check(ConsoleText.isHdiutilDeprecation("hdiutil: WARNING: hdiutil attach is deprecated"), "deprecation warning")
+check(!ConsoleText.isHdiutilDeprecation("hdiutil: attach failed"), "real hdiutil error is not a deprecation")
+check(!ConsoleText.isHdiutilDeprecation("diskutil: something deprecated"), "diskutil text is not the hdiutil warning")
+
+let prefixedChecksum = Data("PERCENT:12\nPERCENT:100\n".utf8) + checksumPlist
+check(PlistParsing.parseChecksum(from: prefixedChecksum) == "A319E512EF5058A4", "checksum ignores puppetstrings prefix")
+
+let diskutilLimits = """
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>min</key>
+    <integer>4001792</integer>
+    <key>current</key>
+    <integer>3999744</integer>
+    <key>max</key>
+    <integer>4503599626321920</integer>
+</dict>
+</plist>
+""".data(using: .utf8)!
+do {
+    let limits = try PlistParsing.parseDiskutilResizeLimits(from: diskutilLimits)
+    check(limits.minBytes == 4001792, "diskutil resize min bytes")
+    check(limits.currentBytes == 3999744, "diskutil resize current bytes")
+    check(limits.maxBytes == 4503599626321920, "diskutil resize max bytes")
+    check(limits.minSectors == 4001792 / 512, "diskutil resize min sectors")
+} catch {
+    failed += 1
+    print("FAIL diskutil resize limits: \(error)")
+}
+
+let encryptedASIF = """
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Encryption Info</key>
+    <dict>
+        <key>Is Encrypted</key>
+        <integer>1</integer>
+    </dict>
+</dict>
+</plist>
+""".data(using: .utf8)!
+let plainASIF = """
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Encryption Info</key>
+    <dict>
+        <key>Is Encrypted</key>
+        <integer>0</integer>
+    </dict>
+</dict>
+</plist>
+""".data(using: .utf8)!
+check(PlistParsing.parseEncrypted(from: encryptedASIF) == true, "diskutil encrypted integer 1")
+check(PlistParsing.parseEncrypted(from: plainASIF) == false, "diskutil encrypted integer 0")
+
 if failed == 0 {
     print("All checks passed.")
     exit(0)

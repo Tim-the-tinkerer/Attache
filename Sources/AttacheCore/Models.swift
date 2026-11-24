@@ -33,7 +33,7 @@ public enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
     public var summary: String {
         switch self {
         case .attached: return "Overview and mounted images"
-        case .attach: return "Mount a .dmg, .iso, or sparse image"
+        case .attach: return "Mount a .dmg, .iso, .asif, or sparse image"
         case .create: return "New blank image, or from a folder"
         case .convert: return "Change image format"
         case .inspect: return "Read metadata and verify"
@@ -117,6 +117,7 @@ public enum ImageFormat: String, CaseIterable, Identifiable, Hashable {
     case udto = "UDTO"
     case udco = "UDCO"
     case ufbi = "UFBI"
+    case asif = "ASIF"
 
     public var id: String { rawValue }
 
@@ -132,6 +133,7 @@ public enum ImageFormat: String, CaseIterable, Identifiable, Hashable {
         case .udto: return "DVD/CD master"
         case .udco: return "Compressed (ADC)"
         case .ufbi: return "Entire device"
+        case .asif: return "Apple Sparse Image"
         }
     }
 
@@ -147,6 +149,7 @@ public enum ImageFormat: String, CaseIterable, Identifiable, Hashable {
         case .udto: return "Optical master (.cdr) for burning."
         case .udco: return "Older ADC compression."
         case .ufbi: return "Full device image, no compression."
+        case .asif: return "Apple Sparse Image Format. macOS 27 and later, via diskutil image. Encryption is AES-256."
         }
     }
 
@@ -155,6 +158,7 @@ public enum ImageFormat: String, CaseIterable, Identifiable, Hashable {
         case .udsp: return "sparseimage"
         case .udsb: return "sparsebundle"
         case .udto: return "cdr"
+        case .asif: return "asif"
         default: return "dmg"
         }
     }
@@ -162,7 +166,21 @@ public enum ImageFormat: String, CaseIterable, Identifiable, Hashable {
     public static var convertCases: [ImageFormat] { allCases }
 
     public static var folderCreateCases: [ImageFormat] {
-        [.udzo, .ulfo, .ulmo, .udro, .udrw, .udsp, .udsb, .udto]
+        [.udzo, .ulfo, .ulmo, .udro, .udrw, .udsp, .udsb, .udto, .asif]
+    }
+
+    /// Format name for `diskutil image create from --format`. Nil when diskutil cannot write this format.
+    public var diskutilFormat: String? {
+        switch self {
+        case .asif: return "ASIF"
+        case .udzo: return "UDZO"
+        case .ulfo: return "ULFO"
+        case .ulmo: return "ULMO"
+        case .udro: return "UDRO"
+        case .udrw: return "RAW"
+        case .udsb: return "UDSB"
+        case .udsp, .udto, .udco, .ufbi: return nil
+        }
     }
 }
 
@@ -171,6 +189,7 @@ public enum BlankImageType: String, CaseIterable, Identifiable, Hashable {
     case sparse = "SPARSE"
     case sparsebundle = "SPARSEBUNDLE"
     case udto = "UDTO"
+    case asif = "ASIF"
 
     public var id: String { rawValue }
 
@@ -180,6 +199,7 @@ public enum BlankImageType: String, CaseIterable, Identifiable, Hashable {
         case .sparse: return "Sparse image"
         case .sparsebundle: return "Sparse bundle"
         case .udto: return "DVD/CD master"
+        case .asif: return "Apple Sparse Image"
         }
     }
 
@@ -189,6 +209,7 @@ public enum BlankImageType: String, CaseIterable, Identifiable, Hashable {
         case .sparse: return "sparseimage"
         case .sparsebundle: return "sparsebundle"
         case .udto: return "cdr"
+        case .asif: return "asif"
         }
     }
 }
@@ -218,6 +239,20 @@ public enum DiskFilesystem: String, CaseIterable, Identifiable, Hashable {
         case .fat16: return "MS-DOS (FAT16)"
         case .udf: return "UDF"
         }
+    }
+
+    /// Value for `diskutil image create blank --fs`. Nil when this filesystem is not offered for ASIF.
+    public var diskutilFilesystem: String? {
+        switch self {
+        case .apfs: return "APFS"
+        case .exfat: return "ExFAT"
+        case .fat32: return "MS-DOS"
+        default: return nil
+        }
+    }
+
+    public static var asifCases: [DiskFilesystem] {
+        allCases.filter { $0.diskutilFilesystem != nil }
     }
 }
 
@@ -379,49 +414,91 @@ public struct InfoRow: Identifiable, Equatable, Sendable {
 }
 
 public struct HDIRequest: Equatable, Sendable {
+    public enum Tool: String, Equatable, Sendable {
+        case hdiutil
+        case diskutil
+    }
+
     public var verb: String
     public var arguments: [String]
     public var password: String?
     public var wantsPlist: Bool
     public var wantsProgress: Bool
+    public var tool: Tool
+    /// Words before the verb. `diskutil image attach` uses `["image"]`.
+    public var argumentPrefix: [String]
+    /// diskutil image reads a newline-terminated passphrase. hdiutil reads a NUL.
+    public var newlinePassphrase: Bool
 
     public init(
         verb: String,
         arguments: [String] = [],
         password: String? = nil,
         wantsPlist: Bool = false,
-        wantsProgress: Bool = false
+        wantsProgress: Bool = false,
+        tool: Tool = .hdiutil,
+        argumentPrefix: [String] = [],
+        newlinePassphrase: Bool = false
     ) {
         self.verb = verb
         self.arguments = arguments
         self.password = password
         self.wantsPlist = wantsPlist
         self.wantsProgress = wantsProgress
+        self.tool = tool
+        self.argumentPrefix = argumentPrefix
+        self.newlinePassphrase = newlinePassphrase
+    }
+
+    public var executablePath: String {
+        switch tool {
+        case .hdiutil: return "/usr/bin/hdiutil"
+        case .diskutil: return "/usr/sbin/diskutil"
+        }
+    }
+
+    /// Short label for the console status line.
+    public var statusLabel: String {
+        switch tool {
+        case .hdiutil:
+            return "hdiutil \(verb)"
+        case .diskutil:
+            if argumentPrefix.contains("image") {
+                return "diskutil image \(verb)"
+            }
+            return "diskutil \(verb)"
+        }
     }
 
     public var processArguments: [String] {
-        var args = [verb] + arguments
-        if let password, !password.isEmpty {
-            args.append("-stdinpass")
-        }
-        if wantsPlist {
-            args.append("-plist")
-        }
-        if wantsProgress {
-            args.append("-puppetstrings")
-        }
+        var args = argumentPrefix + [verb] + arguments
+        appendCommonFlags(to: &args)
         return args
     }
 
     public var displayCommand: String {
-        var parts = ["hdiutil", verb]
-        parts.append(contentsOf: arguments)
-        if let password, !password.isEmpty {
-            parts.append("-stdinpass")
-        }
-        if wantsPlist { parts.append("-plist") }
-        if wantsProgress { parts.append("-puppetstrings") }
+        let program = tool == .hdiutil ? "hdiutil" : "diskutil"
+        var parts = [program] + argumentPrefix + [verb] + arguments
+        appendCommonFlags(to: &parts)
         return parts.map(Self.shellQuote).joined(separator: " ")
+    }
+
+    private func appendCommonFlags(to args: inout [String]) {
+        if let password, !password.isEmpty {
+            let flag = tool == .diskutil ? "--stdinpass" : "-stdinpass"
+            if !args.contains(flag) {
+                args.append(flag)
+            }
+        }
+        if wantsPlist {
+            let flag = tool == .diskutil ? "--plist" : "-plist"
+            if !args.contains(flag) {
+                args.append(flag)
+            }
+        }
+        if wantsProgress, tool == .hdiutil, !args.contains("-puppetstrings") {
+            args.append("-puppetstrings")
+        }
     }
 
     public static func shellQuote(_ value: String) -> String {
@@ -435,7 +512,7 @@ public struct HDIRequest: Equatable, Sendable {
 }
 
 public enum AttacheError: Error, LocalizedError, Equatable {
-    case missingBinary
+    case missingBinary(path: String)
     case busy
     case invalidInput(String)
     case failed(verb: String, status: Int32, message: String)
@@ -443,8 +520,8 @@ public enum AttacheError: Error, LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .missingBinary:
-            return "Could not find /usr/bin/hdiutil on this Mac."
+        case .missingBinary(let path):
+            return "Could not find \(path) on this Mac."
         case .busy:
             return "Another disk-image operation is already running."
         case .invalidInput(let message):
@@ -457,6 +534,14 @@ public enum AttacheError: Error, LocalizedError, Equatable {
         case .cancelled:
             return "The operation was cancelled."
         }
+    }
+}
+
+public enum ConsoleText {
+    /// macOS 27 prints this on stderr for deprecated hdiutil verbs. It is not a failure.
+    public static func isHdiutilDeprecation(_ line: String) -> Bool {
+        let lower = line.lowercased()
+        return lower.contains("hdiutil") && lower.contains("deprecated")
     }
 }
 
@@ -484,10 +569,19 @@ public enum JobKind: String, Equatable {
 
 public enum DiskImagePath {
     public static let imageExtensions: Set<String> = [
-        "dmg", "iso", "img", "cdr", "sparseimage", "toast", "dmgpart", "shadow", "bin", "nrg"
+        "dmg", "iso", "img", "cdr", "sparseimage", "toast", "dmgpart", "shadow", "bin", "nrg", "asif"
     ]
 
+    public static func isASIF(_ url: URL) -> Bool {
+        url.pathExtension.lowercased() == "asif"
+    }
+
+    public static func isASIF(_ path: String) -> Bool {
+        isASIF(URL(fileURLWithPath: path))
+    }
+
     public static func isDiskImage(_ url: URL) -> Bool {
+        if isASIF(url) { return true }
         if url.pathExtension.lowercased() == "sparsebundle" { return true }
         if url.hasDirectoryPath && url.lastPathComponent.lowercased().hasSuffix(".sparsebundle") {
             return true

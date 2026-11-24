@@ -9,7 +9,7 @@ struct InspectView: View {
             OperationHeader(
                 title: "Inspect",
                 systemImage: "magnifyingglass",
-                blurb: "Read format, size, and checksum metadata with hdiutil imageinfo, and verify stored checksums."
+                blurb: "Read format, size, and checksum metadata. Uses hdiutil imageinfo, or diskutil image info for Apple Sparse Image. Verify stays on hdiutil."
             )
 
             PathWell(
@@ -55,7 +55,8 @@ struct InspectView: View {
                 } label: {
                     Label("Verify Checksum", systemImage: "checkmark.seal")
                 }
-                .disabled(!model.canRun || model.inspectForm.source == nil)
+                .disabled(!model.canRun || model.inspectForm.source == nil || inspectIsASIF)
+                .help(inspectIsASIF ? "Verify is not available for an Apple Sparse Image." : "Verify the stored checksum")
 
                 if let flag = model.inspectForm.encrypted {
                     Label(
@@ -86,7 +87,7 @@ struct InspectView: View {
             }
 
             if !model.inspectForm.rows.isEmpty {
-                GroupBox("imageinfo") {
+                GroupBox("Details") {
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(model.inspectForm.rows) { row in
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -107,5 +108,9 @@ struct InspectView: View {
                 }
             }
         }
+    }
+
+    private var inspectIsASIF: Bool {
+        model.inspectForm.source.map(DiskImagePath.isASIF) ?? false
     }
 }

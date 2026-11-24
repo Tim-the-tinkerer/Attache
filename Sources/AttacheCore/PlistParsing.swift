@@ -18,9 +18,47 @@ public enum PlistParsing {
 
     public static func parseEncrypted(from data: Data) -> Bool? {
         guard let dict = try? plistRoot(data) as? [String: Any] else { return nil }
-        if let flag = dict["encrypted"] as? Bool { return flag }
-        if let flag = dict["Encrypted"] as? Bool { return flag }
+        if let flag = boolish(dict["encrypted"]) { return flag }
+        if let flag = boolish(dict["Encrypted"]) { return flag }
+        if let info = dict["Encryption Info"] as? [String: Any] {
+            return boolish(info["Is Encrypted"])
+        }
         return nil
+    }
+
+    /// hdiutil resize -limits reports 512-byte sectors. diskutil image resize reports bytes.
+    public static func parseDiskutilResizeLimits(from data: Data) throws -> ResizeLimits {
+        let root = try plistRoot(data)
+        guard let dict = root as? [String: Any],
+              let min = int64(dict["min"]),
+              let current = int64(dict["current"]),
+              let max = int64(dict["max"])
+        else {
+            throw AttacheError.invalidInput("Could not read resize limits from diskutil image.")
+        }
+        return ResizeLimits(
+            minSectors: sectors(fromBytes: min),
+            currentSectors: sectors(fromBytes: current),
+            maxSectors: sectors(fromBytes: max)
+        )
+    }
+
+    public static func imageInfoSummary(_ dict: [String: Any]) -> [String: String] {
+        var summary: [String: String] = [:]
+        if let format = stringValue(in: dict, keys: ["Format", "format", "Image Format", "Format Description", "Class Name"]) {
+            summary["Format"] = format
+        }
+        if let checksum = stringValue(in: dict, keys: ["Checksum Type", "Checksum"]) {
+            summary["Checksum"] = checksum
+        }
+        if let size = (dict["Size Information"] as? [String: Any]) ?? (dict["Size Info"] as? [String: Any]),
+           let total = stringValue(in: size, keys: ["Total Bytes", "Compressed Bytes"]) {
+            summary["Total Bytes"] = total
+        }
+        if let info = dict["Encryption Info"] as? [String: Any], let flag = boolish(info["Is Encrypted"]) {
+            summary["Encrypted"] = flag ? "yes" : "no"
+        }
+        return summary
     }
 
     public static func parseResizeLimits(from data: Data) throws -> ResizeLimits {
@@ -70,7 +108,28 @@ public enum PlistParsing {
     }
 
     public static func plistRoot(_ data: Data) throws -> Any {
-        try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+        try PropertyListSerialization.propertyList(from: plistPayload(data), options: [], format: nil)
+    }
+
+    /// hdiutil -plist -puppetstrings writes PERCENT lines ahead of the plist on stdout.
+    static func plistPayload(_ data: Data) -> Data {
+        let xml = Data("<?xml".utf8)
+        let binary = Data("bplist".utf8)
+        let xmlAt = data.range(of: xml)?.lowerBound
+        let binaryAt = data.range(of: binary)?.lowerBound
+        let start: Data.Index?
+        switch (xmlAt, binaryAt) {
+        case let (xml?, binary?):
+            start = min(xml, binary)
+        case let (xml?, nil):
+            start = xml
+        case let (nil, binary?):
+            start = binary
+        default:
+            start = nil
+        }
+        guard let start, start > data.startIndex else { return data }
+        return data.subdata(in: start..<data.endIndex)
     }
 
     public static func parseDiskutilDevices(from data: Data) -> [DiskDevice] {
@@ -157,6 +216,28 @@ public enum PlistParsing {
         )
         guard let min, let current, let max else { return nil }
         return ResizeLimits(minSectors: min, currentSectors: current, maxSectors: max)
+    }
+
+    private static func sectors(fromBytes bytes: Int64) -> Int64 {
+        guard bytes > 0 else { return 0 }
+        return bytes / 512
+    }
+
+    static func boolish(_ value: Any?) -> Bool? {
+        switch value {
+        case let flag as Bool:
+            return flag
+        case let number as NSNumber:
+            return number.boolValue
+        case let text as String:
+            switch text.lowercased() {
+            case "yes", "true", "1": return true
+            case "no", "false", "0": return false
+            default: return nil
+            }
+        default:
+            return nil
+        }
     }
 
     private static func int64(_ value: Any?) -> Int64? {

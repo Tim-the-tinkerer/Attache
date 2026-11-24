@@ -27,7 +27,7 @@ struct AttachedView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("What do you want to do?")
                 .font(.title2.weight(.semibold))
-            Text("Attaché is a front end for the system hdiutil command. Pick an action, or drop a disk image onto this window.")
+            Text("Attaché is a front end for hdiutil and, for Apple Sparse Image (.asif), diskutil image. Pick an action, or drop a disk image onto this window.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

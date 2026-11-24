@@ -5,6 +5,27 @@ All notable changes to **Attaché** are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-11-23
+
+### Added
+
+- Apple Sparse Image (`.asif`) attach, inspect, create, convert, and resize go through `diskutil image`. Detach of an attached `.asif` uses `diskutil eject`. Other formats stay on `hdiutil`
+- Blank ASIF images can use APFS, ExFAT, or MS-DOS, with AES-256 encryption. Convert can write ASIF, RAW, UDRO, UDZO, ULFO, ULMO, and UDSB. UDRW is written as RAW
+- The app claims the `.asif` extension
+
+### Fixed
+
+- Staged-image verification passes the job password into `imageinfo` (or `diskutil image info` for `.asif`), so an encrypted image no longer waits on SecurityAgent
+- Attach After Create passes the create password into the attach
+- Checksum results still parse when `hdiutil -puppetstrings` prints progress lines ahead of the plist
+- macOS 27 `hdiutil` deprecation warnings are omitted from the console and from failure text
+- ASIF resize limits, which `diskutil` reports in bytes, are converted to 512-byte sectors before the min / current / max check
+
+### Changed
+
+- Verify, compact, checksum, and hybrid refuse an Apple Sparse Image, because those `hdiutil` verbs do not read the format
+- ASIF attach ignores skip-verify and Finder auto-open. ASIF resize has no partition-only mode. Band size is not set when converting an `.asif` source
+
 ## [1.3.1] - 2026-08-13
 
 ### Fixed

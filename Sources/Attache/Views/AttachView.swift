@@ -10,12 +10,12 @@ struct AttachView: View {
             OperationHeader(
                 title: "Attach",
                 systemImage: "externaldrive.badge.plus",
-                blurb: "Attach a disk image as a device and optionally mount its volumes. Wraps hdiutil attach."
+                blurb: "Attach a disk image as a device and optionally mount its volumes. Wraps hdiutil attach, or diskutil image attach for Apple Sparse Image."
             )
 
             PathWell(
                 title: "Disk image",
-                placeholder: "Drop a .dmg, .iso, .sparseimage, or .sparsebundle",
+                placeholder: "Drop a .dmg, .iso, .asif, .sparseimage, or .sparsebundle",
                 url: model.attachForm.source,
                 recents: model.recents.filter(DiskImagePath.isDiskImage),
                 onChoose: {
@@ -37,8 +37,15 @@ struct AttachView: View {
                     Toggle("Read-only", isOn: $model.attachForm.readOnly)
                     Toggle("Do not mount volumes (−nomount)", isOn: $model.attachForm.noMount)
                     Toggle("Skip checksum verify", isOn: $model.attachForm.skipVerify)
+                        .disabled(sourceIsASIF)
                     Toggle("Open in Finder after attach", isOn: $model.attachForm.autoOpen)
-                        .disabled(model.attachForm.noMount)
+                        .disabled(model.attachForm.noMount || sourceIsASIF)
+                    if sourceIsASIF {
+                        Text("Skip verify and Finder auto-open are not available for an Apple Sparse Image. Attach uses diskutil image.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     Toggle("Custom mount point", isOn: $model.attachForm.useCustomMount)
                         .disabled(model.attachForm.noMount)
                     if model.attachForm.useCustomMount && !model.attachForm.noMount {
@@ -86,5 +93,9 @@ struct AttachView: View {
                 EmptyView()
             }
         }
+    }
+
+    private var sourceIsASIF: Bool {
+        model.attachForm.source.map(DiskImagePath.isASIF) ?? false
     }
 }

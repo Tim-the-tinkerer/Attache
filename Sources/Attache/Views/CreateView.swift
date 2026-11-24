@@ -9,7 +9,7 @@ struct CreateView: View {
             OperationHeader(
                 title: "Create",
                 systemImage: "plus.rectangle.on.folder",
-                blurb: "Create a blank image, image a folder, or clone a device. Wraps hdiutil create."
+                blurb: "Create a blank image, image a folder, or clone a device. Wraps hdiutil create, or diskutil image create for Apple Sparse Image."
             )
 
             Picker("Source", selection: $model.createForm.mode) {
@@ -53,11 +53,16 @@ struct CreateView: View {
             GroupBox("Encryption") {
                 VStack(alignment: .leading, spacing: 10) {
                     Picker("Encryption", selection: $model.createForm.encryption) {
-                        ForEach(EncryptionChoice.allCases) { choice in
+                        ForEach(encryptionChoices) { choice in
                             Text(choice.title).tag(choice)
                         }
                     }
                     .labelsHidden()
+                    if model.createForm.createsASIF {
+                        Text("Apple Sparse Image encryption is AES-256.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     if model.createForm.encryption != .none {
                         PasswordFields(
                             prompt: "New image password",
@@ -83,6 +88,10 @@ struct CreateView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .onChange(of: model.createForm.mode) { _ in model.normalizeASIFForm() }
+        .onChange(of: model.createForm.type) { _ in model.normalizeASIFForm() }
+        .onChange(of: model.createForm.folderFormat) { _ in model.normalizeASIFForm() }
+        .onChange(of: model.createForm.deviceFormat) { _ in model.normalizeASIFForm() }
     }
 
     private var blankFields: some View {
@@ -114,6 +123,12 @@ struct CreateView: View {
                     .frame(maxWidth: 320)
                 }
                 filesystemPicker
+                if model.createForm.type == .asif {
+                    Text("Apple Sparse Image uses diskutil image. The filesystem can be APFS, ExFAT, or MS-DOS.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 volumeNameField
                 if model.createForm.type == .sparsebundle {
                     Divider()
@@ -151,10 +166,17 @@ struct CreateView: View {
                 Text(model.createForm.folderFormat.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Toggle("Override filesystem", isOn: $model.createForm.overrideFilesystem)
-                    .toggleStyle(.checkbox)
-                if model.createForm.overrideFilesystem {
-                    filesystemPicker
+                if model.createForm.folderFormat == .asif {
+                    Text("An Apple Sparse Image from a folder keeps the source layout. diskutil image does not take a filesystem override.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Toggle("Override filesystem", isOn: $model.createForm.overrideFilesystem)
+                        .toggleStyle(.checkbox)
+                    if model.createForm.overrideFilesystem {
+                        filesystemPicker
+                    }
                 }
                 volumeNameField
                 if model.createForm.folderFormat == .udsb {
@@ -199,7 +221,7 @@ struct CreateView: View {
                     }
                     .labelsHidden()
                 }
-                Text("Imaging a physical disk reads every block. Prefer an external disk. APFS sources must be a container, not a single volume.")
+                Text(deviceCaption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -219,7 +241,7 @@ struct CreateView: View {
             Text("Filesystem")
                 .frame(width: 110, alignment: .leading)
             Picker("Filesystem", selection: $model.createForm.filesystem) {
-                ForEach(DiskFilesystem.allCases) { fs in
+                ForEach(filesystemCases) { fs in
                     Text(fs.title).tag(fs)
                 }
             }
@@ -236,6 +258,21 @@ struct CreateView: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 280)
         }
+    }
+
+    private var encryptionChoices: [EncryptionChoice] {
+        model.createForm.createsASIF ? [.none, .aes256] : EncryptionChoice.allCases
+    }
+
+    private var filesystemCases: [DiskFilesystem] {
+        model.createForm.createsASIF ? DiskFilesystem.asifCases : DiskFilesystem.allCases
+    }
+
+    private var deviceCaption: String {
+        if model.createForm.deviceFormat == .asif {
+            return "Cloning a device to Apple Sparse Image uses diskutil image. A root-owned disk can fail with Operation not permitted. Other formats still use hdiutil create −srcdevice. Prefer an external disk, and use an APFS container rather than a single volume."
+        }
+        return "Imaging a physical disk reads every block. Prefer an external disk. APFS sources must be a container, not a single volume."
     }
 
     private var outputHint: String {

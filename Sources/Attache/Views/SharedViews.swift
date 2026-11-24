@@ -75,7 +75,7 @@ struct PasswordFields: View {
                 SecureField("Confirm password", text: confirm)
                     .textFieldStyle(.roundedBorder)
             }
-            Text("The password is sent to hdiutil on stdin (−stdinpass). It is never placed on the command line. Attaché does not retain passwords after a job ends.")
+            Text("The password is sent on stdin (−stdinpass, or --stdinpass for diskutil image). It is never placed on the command line. Attaché does not retain passwords after a job ends.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -250,7 +250,7 @@ struct JobConsoleView: View {
     private var statusText: String {
         switch model.job {
         case .idle: return "Ready"
-        case .running(let verb, _, _): return "Running hdiutil \(verb)…"
+        case .running(let verb, _, _): return "Running \(verb)…"
         case .succeeded(let text): return text
         case .failed(let text): return text
         case .cancelled: return "Cancelled"

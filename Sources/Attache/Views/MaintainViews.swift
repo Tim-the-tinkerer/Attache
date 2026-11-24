@@ -41,6 +41,12 @@ struct CompactView: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 360)
 
+            if model.compactForm.source.map(DiskImagePath.isASIF) == true {
+                Text("Compact is not available for an Apple Sparse Image. diskutil image has no compact command.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text("Compact only works on SPARSE / SPARSEBUNDLE images that contain an APFS or HFS+ filesystem. The image should not be attached.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -54,7 +60,7 @@ struct CompactView: View {
                         .fontWeight(.semibold)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!model.canRun || model.compactForm.source == nil)
+                .disabled(!model.canRun || model.compactForm.source == nil || model.compactForm.source.map(DiskImagePath.isASIF) == true)
             } secondary: {
                 EmptyView()
             }
@@ -129,12 +135,19 @@ struct ResizeView: View {
                 }
             ))
             .toggleStyle(.checkbox)
-            .disabled(model.resizeForm.imageOnly)
+            .disabled(model.resizeForm.imageOnly || resizeIsASIF)
             .help("Advanced. Changes only the partition map. A mismatch with the image file can make the image unusable.")
-            Text("Image Only and Partition Only are advanced. Prefer a full resize unless you know you need them.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if resizeIsASIF {
+                Text("Apple Sparse Image resize uses diskutil image. Partition-only is not available. Limits are reported in bytes and shown here as 512-byte sectors.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Image Only and Partition Only are advanced. Prefer a full resize unless you know you need them.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if let note = resizePreviewNote {
                 Text(note)
@@ -174,6 +187,10 @@ struct ResizeView: View {
                 .disabled(!model.canRun || model.resizeForm.source == nil)
             }
         }
+    }
+
+    private var resizeIsASIF: Bool {
+        model.resizeForm.source.map(DiskImagePath.isASIF) ?? false
     }
 
     private var resizePreviewNote: String? {
@@ -248,6 +265,12 @@ struct ChecksumView: View {
             SecureField("Password (if encrypted)", text: $model.checksumForm.password)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 360)
+            if model.checksumForm.source.map(DiskImagePath.isASIF) == true {
+                Text("Checksum is not available for an Apple Sparse Image. hdiutil checksum does not read this format.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if let result = model.checksumForm.result, !result.isEmpty {
                 GroupBox("Result") {
@@ -273,7 +296,7 @@ struct ChecksumView: View {
                         .fontWeight(.semibold)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!model.canRun || model.checksumForm.source == nil)
+                .disabled(!model.canRun || model.checksumForm.source == nil || model.checksumForm.source.map(DiskImagePath.isASIF) == true)
             } secondary: {
                 EmptyView()
             }

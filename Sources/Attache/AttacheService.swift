@@ -59,13 +59,14 @@ final class AttacheService {
         onProgress: @escaping @MainActor (Double?) -> Void,
         onLog: @escaping @MainActor (String) -> Void
     ) async throws -> HDIResult {
-        guard FileManager.default.isExecutableFile(atPath: Self.binaryPath) else {
-            throw AttacheError.missingBinary
+        guard FileManager.default.isExecutableFile(atPath: request.executablePath) else {
+            throw AttacheError.missingBinary(path: request.executablePath)
         }
         return try await runner.launch(
-            executable: Self.binaryPath,
+            executable: request.executablePath,
             arguments: request.processArguments,
             password: request.password,
+            newlinePassphrase: request.newlinePassphrase,
             onProgress: { value in
                 DispatchQueue.main.async { onProgress(value) }
             },
@@ -124,6 +125,7 @@ final class ProcessRunner: @unchecked Sendable {
         executable: String,
         arguments: [String],
         password: String?,
+        newlinePassphrase: Bool = false,
         onProgress: @escaping @Sendable (Double?) -> Void,
         onLog: @escaping @Sendable (String) -> Void
     ) async throws -> HDIResult {
@@ -202,7 +204,7 @@ final class ProcessRunner: @unchecked Sendable {
                     try process.run()
                     if let password, !password.isEmpty {
                         var payload = Data(password.utf8)
-                        payload.append(0)
+                        payload.append(newlinePassphrase ? 0x0A : 0x00)
                         try inPipe.fileHandleForWriting.write(contentsOf: payload)
                     }
                     try inPipe.fileHandleForWriting.close()
@@ -228,6 +230,7 @@ private func emit(
 ) {
     let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
+    if ConsoleText.isHdiutilDeprecation(trimmed) { return }
     if let percent = CommandBuilder.parsePercentLine(trimmed) {
         onProgress(percent < 0 ? nil : percent / 100.0)
         return
